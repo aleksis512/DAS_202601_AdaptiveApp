@@ -9,9 +9,9 @@
 
 | Nombre | GitHub |
 |--------|--------|
-| Camac Alcalá, Alexis Jock | [@aleksis512](https://github.com/aleksis512) |
-| Palacios Palacios, Rafael Enrique | — |
-| Varillas Barahona, Fernando Piero | — |
+| Camac Alcalá, Alexis Jock |
+| Palacios Palacios, Rafael Enrique |
+| Varillas Barahona, Fernando Piero |
 
 **Curso:** Diseño y Arquitectura de Software — DAS 2026-01
 **Universidad:** Universidad Nacional de Ingeniería (UNI)
