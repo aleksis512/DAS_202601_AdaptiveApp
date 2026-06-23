@@ -7,8 +7,8 @@
 
 ## 👥 Integrantes
 
-| Nombre | GitHub |
-|--------|--------|
+| Nombre |
+|--------|
 | Camac Alcalá, Alexis Jock |
 | Palacios Palacios, Rafael Enrique |
 | Varillas Barahona, Fernando Piero |
