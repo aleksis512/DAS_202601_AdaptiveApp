@@ -1,0 +1,30 @@
+{
+  "rules": {
+    "eventos": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      "$eventoId": {
+        ".validate": "newData.hasChildren(['tipo', 'timestamp', 'valorLuz', 'aceleracion', 'estado'])",
+        "tipo": {
+          ".validate": "newData.isString() && newData.val().length() > 0"
+        },
+        "timestamp": {
+          ".validate": "newData.isNumber() && newData.val() <= now"
+        },
+        "valorLuz": {
+          ".validate": "newData.isNumber() && newData.val() >= 0"
+        },
+        "aceleracion": {
+          ".validate": "newData.isNumber() && newData.val() >= 0"
+        },
+        "estado": {
+          ".validate": "newData.isString()"
+        }
+      }
+    },
+    "config": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    }
+  }
+}

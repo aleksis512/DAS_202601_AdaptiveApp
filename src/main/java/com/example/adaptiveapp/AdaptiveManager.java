@@ -1,12 +1,19 @@
 package com.example.adaptiveapp;
 
-import  android.content.Context;
+import android.content.Context;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
+
+import com.google.firebase.database.DatabaseReference;
+import com.google.firebase.database.FirebaseDatabase;
+
+import java.util.HashMap;
+import java.util.Map;
 
 public class AdaptiveManager implements SensorEventListener {
 
@@ -26,20 +33,27 @@ public class AdaptiveManager implements SensorEventListener {
     public interface AdaptiveListener {
         void onLightChanged(float lux);
         void onMotionChanged(float acceleration);
-        void onAdaptiveUpdate(AdaptiveState state);   // <-- usa AdaptiveState directamente
+        void onAdaptiveUpdate(AdaptiveState state);
     }
 
     // Umbrales
-    private static final float LUX_DARK_THRESHOLD      = 20f;
-    private static final float LUX_BRIGHT_THRESHOLD    = 5000f;
-    private static final float MOTION_THRESHOLD        = 3.0f;
+    private static final float LUX_DARK_THRESHOLD       = 20f;
+    private static final float LUX_BRIGHT_THRESHOLD     = 5000f;
+    private static final float MOTION_THRESHOLD         = 3.0f;
     private static final float INTENSE_MOTION_THRESHOLD = 8.0f;
+    private static final float INTENSE_MOTION_THRESHOLD_FCM = 15.0f;
 
-    private final SensorManager   sensorManager;
-    private final Sensor          lightSensor;
-    private final Sensor          accelerometer;
+    // Firebase
+    private DatabaseReference dbRef;
+    private boolean firebaseInitialized = false;
+    private long lastFirebasePublishTime = 0;
+    private static final long FIREBASE_COOLDOWN_MS = 120_000L;
+
+    private final SensorManager    sensorManager;
+    private final Sensor           lightSensor;
+    private final Sensor           accelerometer;
     private final AdaptiveListener listener;
-    private final Handler         handler = new Handler(Looper.getMainLooper());
+    private final Handler          handler = new Handler(Looper.getMainLooper());
 
     private float currentLux   = 200f;
     private float currentAccel = 0f;
@@ -50,6 +64,38 @@ public class AdaptiveManager implements SensorEventListener {
         sensorManager   = (SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
         lightSensor     = sensorManager.getDefaultSensor(Sensor.TYPE_LIGHT);
         accelerometer   = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+    }
+
+    public void inicializarFirebase(Context context) {
+        try {
+            dbRef = FirebaseDatabase.getInstance().getReference();
+            firebaseInitialized = true;
+            Log.d("AdaptiveManager", "Firebase initialized");
+        } catch (Exception e) {
+            Log.e("AdaptiveManager", "Firebase init failed", e);
+        }
+    }
+
+    public void publicarEvento(String tipo, float valorLuz, float aceleracion) {
+        if (!firebaseInitialized || dbRef == null) return;
+        Map<String, Object> evento = new HashMap<>();
+        evento.put("tipo", tipo);
+        evento.put("valorLuz", valorLuz);
+        evento.put("aceleracion", aceleracion);
+        evento.put("timestamp", System.currentTimeMillis());
+        evento.put("estado", calcularEstado(valorLuz, aceleracion));
+        dbRef.child("eventos").push().setValue(evento)
+                .addOnSuccessListener(v -> Log.d("FB", "Evento publicado: " + tipo))
+                .addOnFailureListener(e -> Log.e("FB", "Error publicando", e));
+    }
+
+    private String calcularEstado(float lux, float accel) {
+        if (accel > INTENSE_MOTION_THRESHOLD_FCM) return "ALERTA";
+        if (lux < 10f) return "LUZ_CRITICA";
+        if (lux < LUX_DARK_THRESHOLD) return "OSCURO";
+        if (lux > 8000f) return "LUZ_EXCESIVA";
+        if (lux > LUX_BRIGHT_THRESHOLD) return "BRILLANTE";
+        return "NORMAL";
     }
 
     public void start() {
@@ -113,6 +159,20 @@ public class AdaptiveManager implements SensorEventListener {
         state.adaptiveLog = log.toString();
 
         listener.onAdaptiveUpdate(state);
+
+        // Publicar en Firebase si es evento crítico con cooldown
+        if (firebaseInitialized) {
+            long now2 = System.currentTimeMillis();
+            String tipoEvento = calcularEstado(currentLux, currentAccel);
+            boolean isCritical = state.isIntenseMotion || currentLux < 10f || currentLux > 8000f;
+            if (isCritical && (now2 - lastFirebasePublishTime > FIREBASE_COOLDOWN_MS)) {
+                lastFirebasePublishTime = now2;
+                publicarEvento(tipoEvento, currentLux, currentAccel);
+            } else if (!isCritical && (now2 - lastFirebasePublishTime > 30_000L)) {
+                lastFirebasePublishTime = now2;
+                publicarEvento(tipoEvento, currentLux, currentAccel);
+            }
+        }
     }
 
     @Override

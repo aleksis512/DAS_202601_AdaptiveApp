@@ -3,6 +3,7 @@ package com.example.adaptiveapp;
 import android.animation.ValueAnimator;
 import android.graphics.Color;
 import android.os.Bundle;
+import android.util.Log;
 import android.view.View;
 import android.view.animation.DecelerateInterpolator;
 import android.widget.LinearLayout;
@@ -14,30 +15,151 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.app.AppCompatDelegate;
 import androidx.cardview.widget.CardView;
 
-// ↓ Import explícito de la clase interna
 import com.example.adaptiveapp.AdaptiveManager.AdaptiveState;
+import com.github.mikephil.charting.charts.BarChart;
+import com.github.mikephil.charting.components.XAxis;
+import com.github.mikephil.charting.data.BarData;
+import com.github.mikephil.charting.data.BarDataSet;
+import com.github.mikephil.charting.data.BarEntry;
+import com.github.mikephil.charting.formatter.IndexAxisValueFormatter;
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.database.ChildEventListener;
+import com.google.firebase.database.DataSnapshot;
+import com.google.firebase.database.DatabaseError;
+import com.google.firebase.database.DatabaseReference;
+import com.google.firebase.database.FirebaseDatabase;
+import com.google.firebase.database.Query;
+
+import java.util.ArrayList;
+import java.util.List;
 
 public class MainActivity extends AppCompatActivity
         implements AdaptiveManager.AdaptiveListener {
 
+    private static final String TAG = "MainActivity";
+
     private AdaptiveManager adaptiveManager;
 
     private LinearLayout rootLayout;
-    private CardView     statusCard, infoCard, logCard;
+    private CardView     statusCard, infoCard, logCard, dashboardCard;
     private TextView     tvTitle, tvThemeStatus, tvTextSize;
     private TextView     tvMotionStatus, tvContrastStatus;
     private TextView     tvLuxValue, tvAccelValue;
     private TextView     tvLog, tvWarning, tvFrequency, tvSimpleMode;
+    private TextView     tvDashboardTitle, tvEventCount;
+    private BarChart     barChart;
 
     private boolean lastDarkMode     = false;
     private boolean lastHighContrast = false;
     private float   lastTextScale    = 1.0f;
+
+    // Firebase
+    private DatabaseReference dbRef;
+    private ChildEventListener eventosListener;
+    private final List<Float> accelValues = new ArrayList<>();
+    private final List<String> eventLabels = new ArrayList<>();
+    private int totalEventos = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         buildUIProgrammatically();
         adaptiveManager = new AdaptiveManager(this, this);
+        adaptiveManager.inicializarFirebase(this);
+        inicializarFirebaseAuth();
+    }
+
+    private void inicializarFirebaseAuth() {
+        FirebaseAuth auth = FirebaseAuth.getInstance();
+        if (auth.getCurrentUser() == null) {
+            auth.signInAnonymously()
+                    .addOnSuccessListener(result -> {
+                        Log.d(TAG, "Autenticacion anonima exitosa");
+                        dbRef = FirebaseDatabase.getInstance().getReference();
+                        escucharEstado();
+                    })
+                    .addOnFailureListener(e -> {
+                        Log.e(TAG, "Error de autenticacion", e);
+                        dbRef = FirebaseDatabase.getInstance().getReference();
+                        escucharEstado();
+                    });
+        } else {
+            dbRef = FirebaseDatabase.getInstance().getReference();
+            escucharEstado();
+        }
+    }
+
+    private void escucharEstado() {
+        if (dbRef == null) return;
+        Query query = dbRef.child("eventos").orderByChild("timestamp").limitToLast(20);
+        eventosListener = new ChildEventListener() {
+            @Override
+            public void onChildAdded(DataSnapshot snapshot, String previousChildName) {
+                procesarEvento(snapshot);
+            }
+
+            @Override
+            public void onChildChanged(DataSnapshot snapshot, String previousChildName) {
+                procesarEvento(snapshot);
+            }
+
+            @Override
+            public void onChildRemoved(DataSnapshot snapshot) { /* no-op */ }
+
+            @Override
+            public void onChildMoved(DataSnapshot snapshot, String previousChildName) { /* no-op */ }
+
+            @Override
+            public void onCancelled(DatabaseError error) {
+                Log.e(TAG, "Error escuchando eventos: " + error.getMessage());
+            }
+        };
+        query.addChildEventListener(eventosListener);
+    }
+
+    private void procesarEvento(DataSnapshot snapshot) {
+        try {
+            Float accel = snapshot.child("aceleracion").getValue(Float.class);
+            String estado = snapshot.child("estado").getValue(String.class);
+            if (accel == null) accel = 0f;
+            if (estado == null) estado = "?";
+
+            totalEventos++;
+            accelValues.add(accel);
+            eventLabels.add(estado.length() > 6 ? estado.substring(0, 6) : estado);
+
+            // Mantener solo los ultimos 10
+            if (accelValues.size() > 10) {
+                accelValues.remove(0);
+                eventLabels.remove(0);
+            }
+
+            runOnUiThread(this::actualizarDashboard);
+        } catch (Exception e) {
+            Log.e(TAG, "Error procesando evento", e);
+        }
+    }
+
+    private void actualizarDashboard() {
+        tvEventCount.setText("Total eventos: " + totalEventos);
+
+        List<BarEntry> entries = new ArrayList<>();
+        for (int i = 0; i < accelValues.size(); i++) {
+            entries.add(new BarEntry(i, accelValues.get(i)));
+        }
+
+        BarDataSet dataSet = new BarDataSet(entries, "Aceleracion (m/s²)");
+        dataSet.setColor(Color.parseColor("#3B4FCD"));
+        dataSet.setValueTextColor(Color.parseColor("#333333"));
+        dataSet.setValueTextSize(10f);
+
+        BarData barData = new BarData(dataSet);
+        barData.setBarWidth(0.7f);
+        barChart.setData(barData);
+
+        String[] labels = eventLabels.toArray(new String[0]);
+        barChart.getXAxis().setValueFormatter(new IndexAxisValueFormatter(labels));
+        barChart.invalidate();
     }
 
     @Override
@@ -52,7 +174,15 @@ public class MainActivity extends AppCompatActivity
         adaptiveManager.stop();
     }
 
-    // ── Implementación de AdaptiveListener ────────────────────────────────────
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (dbRef != null && eventosListener != null) {
+            dbRef.child("eventos").removeEventListener(eventosListener);
+        }
+    }
+
+    // ── Implementacion de AdaptiveListener ────────────────────────────────────
 
     @Override
     public void onLightChanged(float lux) {
@@ -67,11 +197,11 @@ public class MainActivity extends AppCompatActivity
     }
 
     @Override
-    public void onAdaptiveUpdate(AdaptiveState state) {   // <-- firma correcta
+    public void onAdaptiveUpdate(AdaptiveState state) {
         runOnUiThread(() -> applyAdaptations(state));
     }
 
-    // ── Motor de adaptación ───────────────────────────────────────────────────
+    // ── Motor de adaptacion ───────────────────────────────────────────────────
 
     private void applyAdaptations(AdaptiveState state) {
 
@@ -87,7 +217,7 @@ public class MainActivity extends AppCompatActivity
             animateTextSize(state.textScaleFactor);
         }
 
-        // PUNTO 3 — Animaciones reducidas en movimiento (se omite animateTextSize si está en movimiento)
+        // PUNTO 3 — Estado
         tvThemeStatus.setText("🎨 Tema: " + (state.isDarkMode ? "OSCURO 🌙" : "CLARO ☀️"));
         tvTextSize.setText("🔤 Texto: ×" + state.textScaleFactor);
 
@@ -136,6 +266,7 @@ public class MainActivity extends AppCompatActivity
             statusCard.setCardBackgroundColor(Color.parseColor("#16213E"));
             infoCard.setCardBackgroundColor(Color.parseColor("#0F3460"));
             logCard.setCardBackgroundColor(Color.parseColor("#16213E"));
+            dashboardCard.setCardBackgroundColor(Color.parseColor("#16213E"));
             tvTitle.setTextColor(Color.parseColor("#E94560"));
         } else {
             AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO);
@@ -143,6 +274,7 @@ public class MainActivity extends AppCompatActivity
             statusCard.setCardBackgroundColor(Color.WHITE);
             infoCard.setCardBackgroundColor(Color.parseColor("#EEF2FF"));
             logCard.setCardBackgroundColor(Color.WHITE);
+            dashboardCard.setCardBackgroundColor(Color.WHITE);
             tvTitle.setTextColor(Color.parseColor("#3B4FCD"));
         }
     }
@@ -175,7 +307,7 @@ public class MainActivity extends AppCompatActivity
         animator.start();
     }
 
-    // ── UI programática ───────────────────────────────────────────────────────
+    // ── UI programatica ───────────────────────────────────────────────────────
 
     private void buildUIProgrammatically() {
         int pad = dp(16);
@@ -245,6 +377,31 @@ public class MainActivity extends AppCompatActivity
         tvLog.setText("Iniciando sensores...");
         logInner.addView(tvLog);
 
+        // Card dashboard Firebase
+        dashboardCard = makeCard();
+        LinearLayout dashInner = cardInner(dashboardCard);
+        tvDashboardTitle = makeLabel(dashInner, "☁️ Dashboard Firebase");
+        tvDashboardTitle.setTextColor(Color.parseColor("#3B4FCD"));
+        tvEventCount = makeLabel(dashInner, "Total eventos: 0");
+        tvEventCount.setTextSize(13f);
+        tvEventCount.setTextColor(Color.parseColor("#666666"));
+
+        barChart = new BarChart(this);
+        LinearLayout.LayoutParams chartParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(200));
+        barChart.setLayoutParams(chartParams);
+        barChart.getDescription().setEnabled(false);
+        barChart.setDrawGridBackground(false);
+        barChart.setNoDataText("Esperando datos de Firebase...");
+        barChart.setNoDataTextColor(Color.parseColor("#888888"));
+        barChart.getXAxis().setPosition(XAxis.XAxisPosition.BOTTOM);
+        barChart.getXAxis().setGranularity(1f);
+        barChart.getXAxis().setTextSize(9f);
+        barChart.getAxisRight().setEnabled(false);
+        barChart.getAxisLeft().setTextSize(10f);
+        barChart.getLegend().setTextSize(11f);
+        dashInner.addView(barChart);
+
         // Ensamblar
         rootLayout.addView(tvTitle);
         rootLayout.addView(tvSubtitle);
@@ -255,6 +412,8 @@ public class MainActivity extends AppCompatActivity
         rootLayout.addView(infoCard);
         rootLayout.addView(space(8));
         rootLayout.addView(logCard);
+        rootLayout.addView(space(8));
+        rootLayout.addView(dashboardCard);
 
         scroll.addView(rootLayout);
         setContentView(scroll);
